@@ -1,0 +1,2724 @@
+---
+title: "Quantechnical"
+author: "MMD"
+date: "2024-06-01"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_float:
+      collapsed: TRUE
+      smooth_scroll: false
+---
+
+```{r setup, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(lubridate)
+library(ggrepel)
+library(ggpubr)
+library(cowplot)
+library(gridExtra)
+library(grid)
+library(kableExtra)
+library(knitr)
+library(expss)
+library(formattable)
+library(magick)
+library(webshot)
+options(scipen=999)
+library(DT)
+library(xfun)
+library(gt)
+library(readxl)
+library(tidyverse)
+library(timetk)
+library(tidyquant)
+library(PerformanceAnalytics)
+```
+
+# Data
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+quantech_full <- read.csv("Data Input/Quantechnical.csv")
+
+quantech_full$DateTime <- as.Date(quantech_full$DateTime, "%m/%d/%Y")
+
+quantech_full <- quantech_full %>% 
+  arrange(desc(DateTime))
+
+paste("Earliest Price Date : ",min(quantech_full$DateTime))
+paste("Latest Price Date : ",max(quantech_full$DateTime))
+
+Date.Signs <- max(quantech_full$DateTime)
+selected.date <- max(quantech_full$DateTime)
+
+quantech <- quantech_full %>%
+  filter(DateTime == Date.Signs)
+
+SOSignal.shape <- c("Alert Buy" = 3, "Buy Now" = 2,"Warning Sell" = 4, "Sell Now" = 6, "Still Buy" = 1,"Still Sell" = 19)
+
+Trend.color <- c("New Uptrend" = "blue", "Uptrend" = "#009900", "New Downtrend" = "orange", "Downtrend" = "red", "---" = "gray")
+
+RelativeTrend.color <- c("Relative Uptrend" = "blue", "Relative Downtrend" = "red")
+
+chartstrategy <- c("ASII", "BBRI", "BBCA", "BMRI")
+
+paste("Market Price used : ", selected.date)
+head(quantech)
+```
+
+# Exploratory Data
+
+Before we analyze stocks prices, we explore all the stocks prices as a whole.
+
+## Stocks and Market Cap
+
+```{r, fig.width=10, fig.height=10, echo = FALSE, message=FALSE, warning=FALSE}
+library(treemap)
+quantech %>% treemap(index = "Ticker", vSize = "MarketCap", type = "index")
+quantech %>% treemap(index = c("Ticker", "IDXSector"), vSize = "MarketCap", type = "index")
+quantech %>% 
+  treemap(index = c("Ticker", "IDXSector"), 
+          vSize = "MarketCap",
+          vColor = "MarketCap",
+          type = "index",
+          fontsize.labels = c(15, 12),
+          fontface.labels = c(2, 1),
+          # bg.labels = c("transparent"),
+          align.labels = list(c("center", "center"),c("right", "bottom")),
+          overlap.labels = 0.5,
+          inflate.labels = F)
+```
+
+## Circular Barplot
+
+```{r, fig.width=10, fig.height=10, echo = FALSE, message=FALSE, warning=FALSE}
+# Create dataset
+# data <- data.frame(
+#   id=seq(1,60),
+#   individual=paste( "Mister ", seq(1,60), sep=""),
+#   value=sample( seq(10,100), 60, replace=T)
+# )
+ 
+
+data <- quantech %>% 
+  select(Ticker, MarketCap) %>%
+  filter(Ticker != "NCKL")%>% 
+  mutate(id = seq(1,nrow(.)))
+
+# ----- This section prepare a dataframe for labels ---- #
+# Get the name and the y position of each label
+label_data <- data
+ 
+# calculate the ANGLE of the labels
+number_of_bar <- nrow(label_data)
+angle <-  90 - 360 * (label_data$id-0.5) /number_of_bar     # I substract 0.5 because the letter must have the angle of the center of the bars. Not extreme right(1) or extreme left (0)
+ 
+# calculate the alignment of labels: right or left
+# If I am on the left part of the plot, my labels have currently an angle < -90
+label_data$hjust<-ifelse( angle < -90, 1, 0)
+ 
+# flip angle BY to make them readable
+label_data$angle<-ifelse(angle < -90, angle+180, angle)
+# ----- ------------------------------------------- ---- #
+ 
+ 
+# Start the plot
+p <- ggplot(data, aes(x=as.factor(id), y=MarketCap)) +       # Note that id is a factor. If x is numeric, there is some space between the first bar
+  
+  # This add the bars with a blue color
+  geom_bar(stat="identity", fill=alpha("skyblue", 0.7)) +
+  
+  # Limits of the plot = very important. The negative value controls the size of the inner circle, the positive one is useful to add size over each bar
+  ylim(-100,120) +
+  
+  # Custom the theme: no axis title and no cartesian grid
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1,4), "cm")      # Adjust the margin to make in sort labels are not truncated!
+  ) +
+  
+  # This makes the coordinate polar instead of cartesian.
+  coord_polar(start = 0) +
+  
+  # Add the labels, using the label_data dataframe that we have created before
+  geom_text(data=label_data, aes(x=id, y=MarketCap, label=Ticker, hjust=hjust), color="black", fontface="bold",alpha=0.6, size=2.5, angle= label_data$angle, inherit.aes = FALSE ) 
+ 
+p
+```
+
+## Circle
+
+```{r, fig.width=10, fig.height=14, echo = FALSE, message=FALSE, warning=FALSE}
+library(packcircles)
+library(viridis)
+library(ggiraph)
+
+# Generate the layout. This function return a dataframe with one line per bubble. 
+# It gives its center (x and y) and its radius, proportional of the value
+
+data <- quantech %>% 
+  select(Ticker, MarketCap) %>% 
+  filter(Ticker != "NCKL")
+
+packing <- circleProgressiveLayout(data$MarketCap, sizetype='area')
+
+packing$radius <- 0.95*packing$radius
+
+data$text <- paste("name: ",data$Ticker, "\n", "value:", data$MarketCap, "\n", "You can add a story here!")
+
+# We can add these packing information to the initial data frame
+data <- cbind(data, packing)
+ 
+# Check that radius is proportional to value. We don't want a linear relationship, since it is the AREA that must be proportionnal to the value
+# plot(data$radius, data$value)
+ 
+# The next step is to go from one center + a radius to the coordinates of a circle that
+# is drawn by a multitude of straight lines.
+dat.gg <- circleLayoutVertices(packing, npoints=50)
+ 
+# Make the plot
+ggplot() + 
+  
+  # Make the bubbles
+  geom_polygon(data = dat.gg, aes(x, y, group = id, fill=as.factor(id)), colour = "black", alpha = 0.6) +
+  
+  # Add text in the center of each bubble + control its size
+  geom_text(data = data, aes(x, y, size=MarketCap, label = Ticker)) +
+  scale_size_continuous(range = c(1,4)) +
+  
+  # General theme:
+  theme_void() + 
+  theme(legend.position="none") +
+  coord_equal()
+
+p <- ggplot() + 
+  geom_polygon_interactive(data = dat.gg, aes(x, y, group = id, fill=id, tooltip = data$text[id], data_id = id), colour = "black", alpha = 0.6) +
+  scale_fill_viridis() +
+  geom_text(data = data, aes(x, y, label = gsub("Group_", "", Ticker)), size=2, color="black") +
+  theme_void() + 
+  theme(legend.position="none", plot.margin=unit(c(0,0,0,0),"cm") ) + 
+  coord_equal()
+
+# Turn it interactive
+widg <- ggiraph(ggobj = p, width_svg = 7, height_svg = 7)
+widg
+
+# save the widget
+library(htmlwidgets)
+# saveWidget(widg, file=paste0( getwd(), "/HtmlWidget/circular_packing_interactive.html"))
+saveWidget(widg, file = "widget.html")
+```
+
+
+## Multiple Technical Data
+
+Tabel ini menampilkan data agregat indikator Analisis Teknikal pada saham - saham pilihan.
+
+```{r, fig.width=10, fig.height=14, echo = FALSE, message=FALSE, warning=FALSE}
+# Daily Signal Stochastic Oscillator
+g1 <- ggplot(quantech, aes(SOSignal))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Daily Signal Stoc. Osc.")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Weekly Signal Stochastic Oscillator
+g2 <- ggplot(quantech, aes(WkESO))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Weekly Signal Stoc. Osc.")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Daily Trend
+g3 <- ggplot(quantech, aes(Trend))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Daily Trend")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Weekly Trend
+g4 <- ggplot(quantech, aes(Weekly_Trend))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Weekly Trend")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Price + Volume Condition
+g5 <- ggplot(quantech, aes(PriceVolumeCond))+
+  geom_bar()+
+  labs(title = "Price & Volume Condition", subtitle = "Real Rise, Real Fall, Fake Rise, Fake Fall")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Turnover Condition
+g6 <- ggplot(quantech, aes(AvgCondition))+
+  geom_bar()+
+  labs(title = "Turnover Condition")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Momentum Performance
+g7 <- ggplot(quantech, aes(RelativeMomentum))+
+  geom_bar()+
+  labs(title = "Relative Momentum")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Trend Performance
+g8 <- ggplot(quantech, aes(RelativeTrend))+
+  geom_bar()+
+  labs(title = "Relative Trend")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# MA200
+g9 <- ggplot(quantech, aes(Price_vs_MA200))+
+  geom_bar()+
+  labs(title = "MA200")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Price + Volume Condition (Yesterday)
+g10 <- ggplot(quantech, aes(Last1D_PVCond))+
+  geom_bar()+
+  labs(title = "Yesterday Price & Volume Condition", subtitle = "Real Rise, Real Fall, Fake Rise, Fake Fall")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Monthly Trend
+g11 <- ggplot(quantech, aes(Monthly_Trend))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Monthly Trend")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+# Monthly Signal Stochastic Oscillator
+g12 <- ggplot(quantech, aes(MoESO))+
+  geom_bar()+
+  coord_flip()+
+  labs(title = "Monthly Signal Stoc. Osc.")+
+  geom_bar()+
+  geom_text(aes(label=scales::percent(..count../sum(..count..))),stat='count',position = position_stack(0.5))
+
+grid.arrange(g1, g3, g2, g4, g11, g12, g9, g6, g5, g10, g7, g8, nrow = 6, top = textGrob("Exploratory Technical Data",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## IDX Sector Return
+
+Tabel ini menampilkan Multiple Return tiap Sektor.
+
+```{r, message=FALSE, fig.width=10, fig.height=10, echo = FALSE, warning=FALSE}
+avg1d.chart.idx <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(avg1d = mean(Ch1D), mean(Ch5D), mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avg1d))+
+  geom_point(aes(color = ifelse(avg1d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avg1d, yend = 0, color = ifelse(avg1d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avg5d.chart.idx <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(mean(Ch1D), avg5d = mean(Ch5D), mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avg5d))+
+  geom_point(aes(color = ifelse(avg5d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avg5d, yend = 0, color = ifelse(avg5d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avg20d.chart.idx <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(mean(Ch1D), mean(Ch5D), avg20d = mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avg20d))+
+  geom_point(aes(color = ifelse(avg20d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avg20d, yend = 0, color = ifelse(avg20d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avgYTD.chart.idx <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(mean(Ch1D), mean(Ch5D), mean(Ch20D), avgYTD = mean(YTDRet)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avgYTD))+
+  geom_point(aes(color = ifelse(avgYTD > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avgYTD, yend = 0, color = ifelse(avgYTD > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+grid.arrange(avg1d.chart.idx, avg5d.chart.idx, avg20d.chart.idx, avgYTD.chart.idx, nrow = 2, top = textGrob("Return Summary - IDX Sector",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+
+## IDX Industry Return
+
+Tabel ini menampilkan Multiple Return tiap Industri.
+
+```{r, message=FALSE, fig.width=10, fig.height=10, echo = FALSE, warning=FALSE}
+avg1d.chart.idx.2 <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(avg1d = mean(Ch1D), mean(Ch5D), mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avg1d))+
+  geom_point(aes(color = ifelse(avg1d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXIndustry, xend = IDXIndustry,y = avg1d, yend = 0, color = ifelse(avg1d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avg5d.chart.idx.2 <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(mean(Ch1D), avg5d = mean(Ch5D), mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avg5d))+
+  geom_point(aes(color = ifelse(avg5d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXIndustry, xend = IDXIndustry,y = avg5d, yend = 0, color = ifelse(avg5d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avg20d.chart.idx.2 <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(mean(Ch1D), mean(Ch5D), avg20d = mean(Ch20D), mean(YTDRet)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avg20d))+
+  geom_point(aes(color = ifelse(avg20d > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXIndustry, xend = IDXIndustry,y = avg20d, yend = 0, color = ifelse(avg20d > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+avgYTD.chart.idx.2 <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(mean(Ch1D), mean(Ch5D), mean(Ch20D), avgYTD = mean(YTDRet)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avgYTD))+
+  geom_point(aes(color = ifelse(avgYTD > 0, "tomato", "black")))+
+  geom_segment(aes(x = IDXIndustry, xend = IDXIndustry,y = avgYTD, yend = 0, color = ifelse(avgYTD > 0, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+grid.arrange(avg1d.chart.idx.2, avg5d.chart.idx.2, avg20d.chart.idx.2, avgYTD.chart.idx.2, nrow = 2, top = textGrob("Return Summary - IDX Industry",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## Stoch. Osc. Summary - IDX Sector
+
+Tabel ini menampilkan data Stochastic Oscillator (%K) berbagai Timeframe untuk tiap Sektor.
+
+```{r, message=FALSE, fig.width=10, fig.height=10, echo = FALSE, warning=FALSE}
+avgd.chart.SO.IDX <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(avgSOd = mean(SO), mean(WkESOValue), mean(MoESOValue)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avgSOd))+
+  geom_point(aes(color = ifelse(avgSOd > 80, "black", "tomato")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avgSOd, yend = 50, color = ifelse(avgSOd > 80, "black", "tomato")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 20, color = 2)+
+  geom_hline(yintercept = 80, color = 2)+
+  geom_hline(yintercept = 50, color = 'lightgrey')+
+  guides(color = FALSE)
+
+avgwk.chart.SO.IDX <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(mean(SO), avgSOwk = mean(WkESOValue), mean(MoESOValue)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>% 
+  ggplot(aes(x = IDXSector, y = avgSOwk))+
+  geom_point(aes(color = ifelse(avgSOwk > 80, "black", "tomato")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avgSOwk, yend = 50, color = ifelse(avgSOwk > 80, "black", "tomato")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 20, color = 2)+
+  geom_hline(yintercept = 80, color = 2)+
+  geom_hline(yintercept = 50, color = 'lightgrey')+
+  guides(color = FALSE)
+
+avgmo.chart.SO.IDX <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(mean(SO), mean(WkESOValue), avgSOmo = mean(MoESOValue)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avgSOmo))+
+  geom_point(aes(color = ifelse(avgSOmo > 80, "black", "tomato")))+
+   geom_segment(aes(x = IDXSector, xend = IDXSector,y = avgSOmo, yend = 50, color = ifelse(avgSOmo > 80, "black", "tomato")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 20, color = 2)+
+  geom_hline(yintercept = 80, color = 2)+
+  geom_hline(yintercept = 50, color = 'lightgrey')+
+  guides(color = FALSE)
+
+grid.arrange(avgd.chart.SO.IDX, avgwk.chart.SO.IDX, avgmo.chart.SO.IDX, nrow = 2, top = textGrob("Stoch. Oscillator Summary - IDX Sector",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## Daily Stoch. Osc Summary - IDX Industry
+
+```{r, message=FALSE, fig.width=17, fig.height=10, echo = FALSE, warning=FALSE}
+avgd.chart.SO.IDX.Summary.Daily <- quantech %>% 
+  group_by(IDXSector, IDXIndustry) %>% 
+  summarize(avgSOd = mean(SO), mean(WkESOValue), mean(MoESOValue)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avgSOd))+
+  geom_point(aes(color = ifelse(avgSOd > 80, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 50, color = 2)+
+  # geom_hline(yintercept = 80, color = 2)+
+  guides(color = FALSE)+
+  facet_grid(~ IDXSector)
+
+# avgBB.chart.idxindustry <- quantech %>%
+#   group_by(IDXSector, IDXIndustry) %>%
+#   summarize(avgBB = mean(BB)) %>%
+#   arrange(desc(IDXIndustry)) %>%
+#   mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+#   ggplot(aes(x = IDXIndustry, y = avgBB))+
+#   geom_point(aes(color = ifelse(avgBB > 80, "black", "tomato")))+
+#   coord_flip()+
+#   theme_bw() +
+#   theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+#   # geom_hline(yintercept = 50, color = 3)+
+#   geom_hline(yintercept = 100, color = 2)+
+#   geom_hline(yintercept = 0, color = 2)+
+#   guides(color = FALSE)+
+#   facet_grid(~ IDXSector)
+
+grid.arrange(avgd.chart.SO.IDX.Summary.Daily, top = textGrob("Daily Stoch. Oscillator Summary - IDX Industry",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## Weekly Stoch. Osc Summary - IDX Industry
+
+```{r, message=FALSE, fig.width=17, fig.height=10, echo = FALSE, warning=FALSE}
+avgd.chart.SO.IDX.Summary.Daily <- quantech %>% 
+  group_by(IDXSector, IDXIndustry) %>% 
+  summarize(mean(SO), avgSOwk = mean(WkESOValue), mean(MoESOValue)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avgSOwk))+
+  geom_point(aes(color = ifelse(avgSOwk > 80, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 50, color = 2)+
+  # geom_hline(yintercept = 80, color = 2)+
+  guides(color = FALSE)+
+  facet_grid(~ IDXSector)
+
+# avgBB.chart.idxindustry <- quantech %>%
+#   group_by(IDXSector, IDXIndustry) %>%
+#   summarize(avgBB = mean(BB)) %>%
+#   arrange(desc(IDXIndustry)) %>%
+#   mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+#   ggplot(aes(x = IDXIndustry, y = avgBB))+
+#   geom_point(aes(color = ifelse(avgBB > 80, "black", "tomato")))+
+#   coord_flip()+
+#   theme_bw() +
+#   theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+#   # geom_hline(yintercept = 50, color = 3)+
+#   geom_hline(yintercept = 100, color = 2)+
+#   geom_hline(yintercept = 0, color = 2)+
+#   guides(color = FALSE)+
+
+#   facet_grid(~ IDXSector)
+
+grid.arrange(avgd.chart.SO.IDX.Summary.Daily, top = textGrob("Daily Stoch. Oscillator Summary - IDX Industry",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## Monthly Stoch. Osc Summary - IDX Industry
+
+```{r, message=FALSE, fig.width=17, fig.height=10, echo = FALSE, warning=FALSE}
+avgd.chart.SO.IDX.Summary.Daily <- quantech %>% 
+  group_by(IDXSector, IDXIndustry) %>% 
+  summarize(mean(SO), mean(WkESOValue), avgSOmo = mean(MoESOValue)) %>% 
+  arrange(desc(IDXIndustry)) %>% 
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avgSOmo))+
+  geom_point(aes(color = ifelse(avgSOmo > 80, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 50, color = 2)+
+  # geom_hline(yintercept = 80, color = 2)+
+  guides(color = FALSE)+
+  facet_grid(~ IDXSector)
+
+# avgBB.chart.idxindustry <- quantech %>%
+#   group_by(IDXSector, IDXIndustry) %>%
+#   summarize(avgBB = mean(BB)) %>%
+#   arrange(desc(IDXIndustry)) %>%
+#   mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+#   ggplot(aes(x = IDXIndustry, y = avgBB))+
+#   geom_point(aes(color = ifelse(avgBB > 80, "black", "tomato")))+
+#   coord_flip()+
+#   theme_bw() +
+#   theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+#   # geom_hline(yintercept = 50, color = 3)+
+#   geom_hline(yintercept = 100, color = 2)+
+#   geom_hline(yintercept = 0, color = 2)+
+#   guides(color = FALSE)+
+#   facet_grid(~ IDXSector)
+
+grid.arrange(avgd.chart.SO.IDX.Summary.Daily, top = textGrob("Daily Stoch. Oscillator Summary - IDX Industry",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## BB Summary - IDX Sector
+
+Tabel ini menampilkan Multiple Return tiap IDX Sektor.
+
+```{r, message=FALSE, fig.width=10, fig.height=5, echo = FALSE, warning=FALSE}
+avgBB.chart.idxsector <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(avgBB = mean(BB)) %>% 
+  arrange(desc(IDXSector)) %>% 
+  mutate(IDXSector = factor(IDXSector, levels = IDXSector)) %>%
+  ggplot(aes(x = IDXSector, y = avgBB))+
+  geom_point(aes(color = ifelse(avgBB > 50, "tomato", "black")))+
+  geom_segment(aes(x = IDXSector, xend = IDXSector,y = avgBB, yend = 50, color = ifelse(avgBB > 50, "tomato", "black")))+
+  coord_flip()+  
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  geom_hline(yintercept = 50, color = 'lightgrey')+
+  geom_hline(yintercept = 100, color = 2)+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)
+
+grid.arrange(avgBB.chart.idxsector, top = textGrob("% BB Summary - IDX Sector",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+## BB Summary - IDX Industry
+
+Tabel ini menampilkan Multiple Return IDX Industry tiap IDX Sektor.
+
+```{r, message=FALSE, fig.width=17, fig.height=10, echo = FALSE, warning=FALSE}
+avgBB.chart.idxindustry <- quantech %>%
+  group_by(IDXSector, IDXIndustry) %>%
+  summarize(avgBB = mean(BB)) %>%
+  arrange(desc(IDXIndustry)) %>%
+  mutate(IDXIndustry = factor(IDXIndustry, levels = IDXIndustry)) %>%
+  ggplot(aes(x = IDXIndustry, y = avgBB))+
+  geom_point(aes(color = ifelse(avgBB > 80, "black", "tomato")))+
+  coord_flip()+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # geom_hline(yintercept = 50, color = 3)+
+  geom_hline(yintercept = 100, color = 2)+
+  geom_hline(yintercept = 0, color = 2)+
+  guides(color = FALSE)+
+  facet_grid(~ IDXSector)
+
+grid.arrange(avgBB.chart.idxindustry, top = textGrob("% BB Summary - IDX Industry per IDX Sector",gp=gpar(fontsize=24)), right = Date.Signs, bottom = "Quantechnical by MMD Chart")
+```
+
+### Table Explanatory Data
+
+```{r}
+IDXIndustry_avgBB <- quantech %>%
+  group_by(IDXIndustry) %>%
+  summarize(IDXIndustry_avgBB = mean(BB))
+
+IDXSector_avgBB <- quantech %>%
+  group_by(IDXSector) %>%
+  summarize(IDXSector_avgBB = mean(BB))
+
+IDXSector_avgSOd <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(IDXSector_avgSOd = mean(SO))
+
+IDXIndustry_avgSOd <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(IDXIndustry_avgSOd = mean(SO))
+
+quantech <- left_join(quantech, IDXIndustry_avgBB) %>% 
+  left_join(., IDXSector_avgBB) %>% 
+  left_join(., IDXSector_avgSOd) %>% 
+  left_join(., IDXIndustry_avgSOd)
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+All.Table.EDA <- quantech %>%
+    select(IDXSector, IDXIndustry, Ticker, SO, 
+           IDXSector_avgSOd, IDXIndustry_avgSOd, BB, IDXSector_avgBB, IDXIndustry_avgBB, ChTurnover)
+
+All.Table.EDA <- All.Table.EDA[order(All.Table.EDA$IDXSector, All.Table.EDA$IDXIndustry, All.Table.EDA$Ticker, All.Table.EDA$SO),]
+
+datatable(All.Table.EDA,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'EDA Table :', htmltools::em(selected.date)))
+```
+
+# Table
+
+## All Table
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+All.Table <- quantech %>%
+    select(IDXSector, IDXIndustry, Ticker, Ch1D, Trend, SOSignal, SO, BB, ChTurnover)
+
+All.Table <- All.Table[order(All.Table$IDXSector, All.Table$IDXIndustry, All.Table$Ticker, All.Table$Trend, All.Table$SO),]
+
+datatable(All.Table,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Basic Table :', htmltools::em(selected.date)))
+```
+
+## Positive 20D Return
+
+Tabel ini menampilkan saham dengan Return 20 hari terakhir yang positif.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Positive.20D <- quantech %>%
+  filter(Ch20D > 0) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Ch20D, Trend, SOSignal, SO)
+
+Positive.20D <- Positive.20D[order(Positive.20D$IDXSector, Positive.20D$IDXIndustry, Positive.20D$Ticker, Positive.20D$Trend, Positive.20D$SO),]
+
+datatable(Positive.20D,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Positive 20D Return :', htmltools::em(selected.date)))
+```
+
+## Above MA200
+
+Tabel ini menampilkan saham dengan harga di atas MA200.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Above.MA200 <- quantech %>% 
+  filter(MA200 == "Above MA200") %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO)
+
+Above.MA200 <- Above.MA200[order(Above.MA200$IDXSector, Above.MA200$IDXIndustry, Above.MA200$Ticker, Above.MA200$Trend, Above.MA200$SOSignal),]
+
+datatable(Above.MA200,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Above MA200 :', htmltools::em(selected.date)))
+```
+
+## Outperform Trend
+
+Tabel ini menampilkan Saham dalam Outperform Trend yang berarti cenderung bergerak lebih baik dari IHSG.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+OPTrend <- quantech %>%
+  filter(RelativeTrend == "Relative Uptrend") %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO)
+
+OPTrend <- OPTrend[order(OPTrend$IDXSector, OPTrend$IDXIndustry, OPTrend$Ticker, OPTrend$Trend, OPTrend$SOSignal),]
+
+datatable(OPTrend,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Stocks In Outperform Trend :', htmltools::em(selected.date)))
+```
+
+## Outperform Trend Signal
+
+Tabel ini menampilkan Saham yang baru saja memasuki Outperform Trend.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+OPTrend.Signal <- quantech %>%
+  filter(RelativeTrendStart == "Relative Uptrend Start") %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO)
+
+OPTrend.Signal <- OPTrend.Signal[order(OPTrend.Signal$IDXSector, OPTrend.Signal$IDXIndustry, OPTrend.Signal$Ticker, OPTrend.Signal$Trend, OPTrend.Signal$SOSignal),]
+
+datatable(OPTrend.Signal,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Stocks Starts Outperform Trend :', htmltools::em(selected.date)))
+```
+
+## Outperform Quandrant
+
+Tabel ini menampilkan Saham di dalam Outperform Quandrant yang berarti cenderung bergerak lebih baik dari IHSG.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Outperform.Quadrant <- quantech %>%
+  filter(Quadrant %in% c("Champion Quadrant", "Rest Quadrant")) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO, Quadrant)
+
+Outperform.Quadrant <- Outperform.Quadrant[order(Outperform.Quadrant$IDXSector, Outperform.Quadrant$IDXIndustry, Outperform.Quadrant$Ticker, Outperform.Quadrant$SO),]
+
+datatable(Outperform.Quadrant,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Stocks in Outperform Quandrant :', htmltools::em(selected.date)))
+```
+
+## AlertBuyNow
+
+Tabel ini menampilkan Saham yang mendapat sinyal Buy baik Alert Buy maupun Buy Now (Golden Cross dari Stochastic Oscillator).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+AlertBuyNow <- quantech %>% 
+  filter(SOSignal %in% c("Alert Buy", "Buy Now")) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO)
+
+AlertBuyNow <- AlertBuyNow[order(AlertBuyNow$IDXSector, AlertBuyNow$IDXIndustry, AlertBuyNow$Ticker, AlertBuyNow$SOSignal, AlertBuyNow$SO),]
+
+# gt(head(AlertBuyNow,10)) %>% 
+#   tab_header(title = "Alert Buy and Buy Now",
+#              subtitle = selected.date)
+
+datatable(AlertBuyNow,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Alert Buy and Buy Now :', htmltools::em(selected.date)))
+```
+
+## AlertBuyNow and Uptrend
+
+Tabel ini menampilkan Saham yang mendapat sinyal Buy (Alert Buy dan Buy Now) dan dalam Uptrend (di atas MA20).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+AlertBuyNow.Uptrend <- quantech %>% 
+  filter(SOSignal %in% c("Alert Buy", "Buy Now") & BB > 50 & BB < 100) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO)
+
+AlertBuyNow.Uptrend <- AlertBuyNow.Uptrend[order(AlertBuyNow.Uptrend$IDXSector, AlertBuyNow.Uptrend$IDXIndustry, AlertBuyNow.Uptrend$Ticker, AlertBuyNow.Uptrend$SOSignal, AlertBuyNow.Uptrend$SO),]
+
+# gt(head(AlertBuyNow.Uptrend,10)) %>% 
+#   tab_header(title = "Uptrend with Alert Buy and Buy Now Signals",
+#              subtitle = selected.date)
+
+datatable(AlertBuyNow.Uptrend,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Uptrend with Alert Buy and Buy Now Signals :', htmltools::em(selected.date)))
+```
+
+## Weekly Net Foreign Buy
+
+Tabel ini menampilkan Saham dengan Net Buy Asing dalam 5 hari terakhir.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+NBA.20D <- quantech %>%
+  filter(F1Wk > 0) %>%
+  select(IDXSector, IDXIndustry, Ticker, Ch1D, Ch5D, Ch20D, Trend, F1D, F2D, F1Wk, F1Mo)
+
+NBA.20D <- NBA.20D[order(NBA.20D$IDXSector, NBA.20D$IDXIndustry, NBA.20D$Ticker, NBA.20D$Trend),]
+
+# gt(head(NBA.20D,10)) %>% 
+#   tab_header(title = "Positive Weekly Net Foreign Buy",
+#              subtitle = selected.date)
+
+datatable(NBA.20D,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Positive Weekly Net Foreign Buy :', htmltools::em(selected.date)))
+```
+
+## Rally with Trading Value
+
+Tabel ini menampilkan Saham yang *Rally* (harganya naik dan diikuti kenaikan Trading Value).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+RallyandRising <- quantech %>% 
+  filter(ChTurnover > 1 & Ch1D > 0.5) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, ChTurnover)
+
+RallyandRising <- RallyandRising[order(RallyandRising$IDXSector, RallyandRising$IDXIndustry, RallyandRising$Ticker, RallyandRising$SOSignal),]
+
+datatable(RallyandRising,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Rally with Trading Value :', htmltools::em(selected.date)))
+```
+
+## High Turnover
+
+Tabel ini menampilkan Saham dengan Turnover (lebih) Tinggi (dari sebelumnya).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+High.TO <- quantech %>% 
+  filter(Volume %in% c("Above Average", "Above Previous", "Abv Prev&Avg")) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, Volume, ChTurnover)
+
+High.TO <- High.TO[order(High.TO$IDXSector, High.TO$IDXIndustry, High.TO$Ticker, High.TO$Trend, High.TO$Volume, High.TO$SOSignal),]
+
+datatable(High.TO,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'High Turnover :', htmltools::em(selected.date)))
+```
+
+## High Turnover+Buy
+
+Tabel ini menampilkan Saham dengan Turnover Tinggi dengan sinyal Buy (Alert Buy dan Buy Now).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+High.TO.Buy <- quantech %>% 
+  filter(Volume %in% c("Above Average", "Above Previous", "Abv Prev&Avg"), SOSignal %in% c("Alert Buy", "Buy Now")) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, Volume, ChTurnover)
+
+High.TO.Buy <- High.TO.Buy[order(High.TO.Buy$IDXSector, High.TO.Buy$IDXIndustry, High.TO.Buy$Ticker, High.TO.Buy$Trend, High.TO.Buy$Volume, High.TO.Buy$SOSignal),]
+
+datatable(High.TO.Buy,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'High Turnover and Buy Signals :', htmltools::em(selected.date)))
+```
+
+## Undershoot
+
+Tabel ini menampilkan Saham yang Undershoot (dibawah Below Bollinger Band).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Undershoot <- subset(quantech, BB<0) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, BB)
+
+Undershoot <- Undershoot[order(Undershoot$IDXSector, Undershoot$IDXIndustry, Undershoot$Ticker, Undershoot$BB),]
+
+datatable(Undershoot,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Undershoot or BB Below 0 :', htmltools::em(selected.date)))
+```
+
+## Fake Fall
+
+Tabel ini menampilkan Saham yang harganya turun dan diikuti penurunan Trading Value.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Fake.Fall <- quantech %>% 
+  filter(PriceVolumeCond == "fake -") %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, SO, ChTurnover)
+
+Fake.Fall <- Fake.Fall[order(Fake.Fall$IDXSector, Fake.Fall$IDXIndustry, Fake.Fall$Ticker, Fake.Fall$Trend, Fake.Fall$SOSignal),]
+
+datatable(Fake.Fall,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Fake Fall :', htmltools::em(selected.date)))
+```
+
+## Squat Bars
+
+Tabel ini menampilkan Squat Bar (kenaikan harga tidak setinggi kenaikan Trading Value).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Limit.Rise <- quantech %>% 
+  filter(ChTurnover > 0 & Ch1D > 0 & Ch1D < ChTurnover) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, ChTurnover)
+
+Limit.Rise <- Limit.Rise[order(Limit.Rise$IDXSector, Limit.Rise$IDXIndustry, Limit.Rise$Ticker, Limit.Rise$Trend, Limit.Rise$SOSignal),]
+
+datatable(Limit.Rise,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Squat Bars :', htmltools::em(selected.date)))
+```
+
+## All Returns
+
+Tabel ini menampilkan saham dengan semua Return yang tersedia (1D, 5D, 20D dan YTD).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+all.returns <- quantech %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Ch5D, Ch20D, YTDRet, Trend, RelativeTrend)
+
+all.returns <- all.returns[order(all.returns$IDXSector, all.returns$IDXIndustry, all.returns$Ticker, all.returns$Trend, all.returns$RelativeTrend),]
+
+datatable(all.returns,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'All Return :', htmltools::em(selected.date)))
+```
+
+## Chart Strategies Return
+
+Tabel ini menampilkan saham Chart Strategy dengan semua Return yang tersedia (1D, 5D, 20D dan YTD).
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+all.returns <- quantech %>%
+  filter(Ticker %in% chartstrategy) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Ch5D, Ch20D, YTDRet, Trend, RelativeTrend)
+
+all.returns <- all.returns[order(all.returns$IDXSector, all.returns$IDXIndustry, all.returns$Ticker, all.returns$Trend, all.returns$RelativeTrend),]
+
+datatable(all.returns,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Stocks Chart Strategies Return :', htmltools::em(selected.date)))
+```
+
+# Graphic Stocks
+
+## All Stocks
+
+```{r, fig.width=10, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% 
+  ggplot(aes(x = Ch5D, y = Ch1D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_wrap(~ Trend, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  # scale_y_continuous("Momentum Performance")+
+  # scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Quantechnical Stock Universe with Basic Signals", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "% 5D Return", y = "% 1D Return")
+```
+
+## Stock with AlertBuyNow
+
+Grafik ini menampilkan Saham yang mendapat sinyal Buy baik Alert Buy maupun Buy Now (Golden Cross dari Stochastic Oscillator).
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+AlertBuyNow <- quantech %>% 
+  filter(SOSignal %in% c("Alert Buy", "Buy Now")) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Ch5D, Trend, SOSignal, SO, ChTurnover, RelativeTrend)
+
+AlertBuyNow <- AlertBuyNow[order(AlertBuyNow$IDXSector, AlertBuyNow$IDXIndustry, AlertBuyNow$Ticker, AlertBuyNow$SOSignal, AlertBuyNow$SO),]
+
+ggplot(AlertBuyNow, aes(x = Ch5D, y = Ch1D, label = Ticker, color = RelativeTrend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  scale_color_manual(values=RelativeTrend.color)+
+  # scale_color_manual(values=Relation.color)+
+  # scale_color_brewer(palette="Greys")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Alert Buy or Buy Now Signal", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stock with AlertBuyNow and Uptrend
+
+Tabel ini menampilkan Saham yang mendapat sinyal Buy (Alert Buy dan Buy Now) dan dalam Uptrend (di atas MA20).
+
+```{r, fig.width=10, fig.height=8, echo = FALSE, message=FALSE, warning=FALSE}
+AlertBuyNow.Uptrend <- quantech %>% 
+  filter(SOSignal %in% c("Alert Buy", "Buy Now") & BB > 50 & BB < 100) %>% 
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Ch5D, Trend, SOSignal, SO, ChTurnover, RelativeTrend)
+
+AlertBuyNow.Uptrend <- AlertBuyNow.Uptrend[order(AlertBuyNow.Uptrend$IDXSector, AlertBuyNow.Uptrend$IDXIndustry, AlertBuyNow.Uptrend$Ticker, AlertBuyNow.Uptrend$SOSignal, AlertBuyNow.Uptrend$SO),]
+
+ggplot(AlertBuyNow.Uptrend, aes(x = Ch5D, y = Ch1D, label = Ticker, color = RelativeTrend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  scale_color_manual(values=RelativeTrend.color)+
+  # scale_color_manual(values=Relation.color)+
+  # scale_color_brewer(palette="Greys")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Alert Buy or Buy Now Signal and Uptrend", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stock that Rally with Trading Value
+
+Tabel ini menampilkan Saham yang *Rally* (harganya naik dan diikuti kenaikan Trading Value).
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+RallyandRising <- quantech %>% 
+  filter(ChTurnover > 1 & Ch1D > 0.5) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, , Ch5D, Trend, SOSignal, ChTurnover, RelativeTrend)
+
+RallyandRising <- RallyandRising[order(RallyandRising$IDXSector, RallyandRising$IDXIndustry, RallyandRising$Ticker, RallyandRising$SOSignal),]
+
+ggplot(RallyandRising, aes(x = Ch5D, y = Ch1D, label = Ticker, color = RelativeTrend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "red"))+
+  scale_color_manual(values=RelativeTrend.color)+
+  # scale_color_manual(values=Relation.color)+
+  # scale_color_brewer(palette="Greys")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Positive 20D Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Positive 20D Return - O/P Trend
+
+Grafik ini menampilkan Saham dan Trend-nya yang mencatat Positive 20D Return, dipisahkan berdasarkan Outperform Trend.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(Ch20D >0), aes(x = Ch5D, y = Ch1D, label = Ticker, color = RelativeTrend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "red"))+
+  scale_color_manual(values=RelativeTrend.color)+
+  # scale_color_manual(values=Relation.color)+
+  # scale_color_brewer(palette="Greys")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Positive 20D Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Positive 20D Return - IDX Sector
+
+Grafik ini menampilkan Saham dan IDX Sector-nya yang mencatat Positive 20D Return - dipisahkan berdasarkan IDX Sector
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(Ch20D >0), aes(x = Ch5D, y = Ch1D, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  scale_color_brewer(palette="Paired")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Positive 20D Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Positive 20D Return - IDX Sector (alternative)
+
+Grafik ini menampilkan Saham dan IDX Sector-nya yang mencatat Positive 20D Return - dipisahkan berdasarkan IDX Sector
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(Ch20D >0), aes(x = Ch20D, y = Ch5D, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  scale_color_brewer(palette="Paired")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 5D Return")+
+  scale_x_continuous("% 20D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stocks with Positive 20D Return (alternate version)", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Positive 1D, 5D and 20D Return
+
+Grafik ini menampilkan Saham dan Relation-nya yang mencatat Positive 20D, 5D dan 1D Return.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(Ch1D > 0, Ch5D > 0, Ch20D >0), 
+       aes(x = Ch5D, y = Ch1D, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_color_brewer(palette="Paired")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with Positive 20D, 5D and 1D Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Net Buy Asing 20D and 5D
+
+Grafik ini menampilkan Saham dan Trend-nya yang mencatat Net Buy Asing dalam 5 dan 20 hari terakhir.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(F1Wk > 0, F1Mo > 0), aes(x = log10(F1Wk), y = log10(F1D), label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_manual(values=c("red", "orange", "#009900", "blue", "gray"))+
+  # scale_color_manual(values=Trend.color)+
+  # scale_color_manual(values=Relation.color)+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D NBSA (log scale)")+
+  scale_x_continuous("% 5D NBSA (log scale)")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with Foreign Net Buy in 20D and 5D", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Net Buy Asing 20D and 5D (IDX Sector)
+
+Grafik ini menampilkan Saham dan Trend-nya yang mencatat Net Buy Asing dalam 5 dan 20 hari terakhir.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(quantech %>% filter(F1Wk > 0, F1Mo > 0), aes(x = log10(F1Wk), y = log10(F1D), label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  # scale_color_manual(values=Relation.color)+
+  scale_color_brewer(palette="Paired")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D NBSA (log scale)")+
+  scale_x_continuous("% 5D NBSA (log scale)")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with Foreign Net Buy in 20D and 5D", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with High Turnover
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+High.TO <- quantech %>%
+  filter(Volume %in% c("Above Average", "Above Previous", "Abv Prev&Avg")) %>%
+  select(IDXSector, IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, Volume, ChTurnover)
+
+High.TO <- High.TO[order(High.TO$IDXSector, High.TO$IDXIndustry, High.TO$Ticker, High.TO$Trend, High.TO$Volume, High.TO$SOSignal),]
+
+High.TO.Q <- quantech %>%
+  filter(ChTurnover > 0)
+
+ggplot(High.TO.Q, aes(x = Ch5D, y = Ch1D, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_manual(values=c("red", "orange", "#009900", "blue", "gray"))+
+  # scale_color_brewer(palette="Paired")+
+  # scale_color_manual(values=Relation.color)+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with High Turnover", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with High Turnover (IDX Sector)
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+High.TO <- quantech %>% 
+  filter(Volume %in% c("Above Average", "Above Previous", "Abv Prev&Avg")) %>%
+  select(IDXSector , IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, Volume, ChTurnover)
+
+High.TO <- High.TO[order(High.TO$IDXSector , High.TO$IDXIndustry, High.TO$Ticker, High.TO$Trend, High.TO$Volume, High.TO$SOSignal),]
+
+High.TO.Q <- quantech %>%
+  filter(ChTurnover > 0)
+
+ggplot(High.TO.Q, aes(x = Ch5D, y = Ch1D, label = Ticker, color = IDXSector ))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_brewer(palette="Paired")+
+  # scale_color_manual(values=Relation.color)+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with High Turnover", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with High Turnover and Buy Signs
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+High.TO.Buy <- quantech %>% 
+  filter(Volume %in% c("Above Average", "Above Previous", "Abv Prev&Avg"), SOSignal %in% c("Alert Buy", "Buy Now")) %>%
+  select(IDXSector , IDXIndustry, Ticker, Close, Ch1D, Trend, SOSignal, Volume, ChTurnover)
+
+High.TO.Buy <- High.TO.Buy[order(High.TO.Buy$IDXSector , High.TO.Buy$IDXIndustry, High.TO.Buy$Ticker, High.TO.Buy$Trend, High.TO.Buy$Volume, High.TO.Buy$SOSignal),]
+
+High.TO.Buy.Q <- quantech %>%
+  filter(ChTurnover > 0, SOSignal %in% c("Alert Buy", "Buy Now"))
+
+ggplot(High.TO.Buy.Q, aes(x = Ch5D, y = Ch1D, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  scale_size(range = c(2, 5), name = "%Ch Turnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_manual(values=c("red", "orange", "#009900", "blue", "gray"))+
+  # scale_color_manual(values=Relation.color)+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("% 1D Return")+
+  scale_x_continuous("% 5D Return")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = 90, y = 3, label = "Too High", hjust = "top")+
+  # annotate("text", x = 101, y = 3, label = "Overshoot", hjust = "top", angle = 90)+
+  # annotate("text", x = 49, y = 0, label = "Downtrend", hjust = "bottom", angle = 90)+
+  # annotate("text", x = 50, y = 0, label = "Uptrend", hjust = "bottom")+
+  labs(title = "Stocks with High Turnover and Buy Signals", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+```
+
+## Stocks with Trend and Momentum
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+stock.trend.momentum <- quantech %>%
+  group_by(Ticker, IDXSector, SOSignal) %>% 
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO))
+
+stock.trend.momentum.plot <- ggplot(stock.trend.momentum, aes(x=Avg.Trend, y=Avg.SO, label = Ticker, color = IDXSector))+
+  geom_point(size = 2, aes(shape = SOSignal))+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  # scale_color_gradient(low="red", high="blue")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("Momentum Meter (Stoch. Osc)")+
+  scale_x_continuous("Trend Meter (%B)")+
+  geom_vline(xintercept = c(50,100), linetype="dotted")+
+  geom_hline(yintercept = c(0, 30, 70, 100), linetype="dotted")+
+  labs(title = "Trend and Momentum in IDX Sectors", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+stock.trend.momentum.plot.text <- paste("Grafik di atas menunjukkan posisi IDX Sectors berdasarkan kondisi Trend dan nilai dari indikator",
+              "Stochastic Oscillator tiap saham - saham yang berada pada IDX Sectors tersebut. Stoch. Osc > 80 berarti Overbought, < 20 berarti Oversold",
+sep = " ")
+stock.trend.momentum.plot.text <- ggparagraph(text = stock.trend.momentum.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(stock.trend.momentum.plot, stock.trend.momentum.plot.text, nrow = 2, heights = c(2,0.09))
+
+library(plotly)
+plot_ly(stock.trend.momentum, x = ~Avg.Trend, y = ~Avg.SO, text = ~Ticker, color = ~IDXSector)
+
+# ggplotly(stock.trend.momentum.plot)
+```
+
+## Stocks with Trend and Momentum (Best Area only)
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+stock.trend.momentum.best <- quantech %>%
+  group_by(Ticker, IDXSector, SOSignal) %>% 
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO)) %>%
+  filter(Avg.Trend >= 50 & Avg.Trend <=100, Avg.SO >= 30 & Avg.SO <=70)
+
+stock.trend.momentum.best.plot <- ggplot(stock.trend.momentum.best, aes(x=Avg.Trend, y=Avg.SO, label = Ticker, color = IDXSector))+
+  geom_point(size = 2, aes(shape = SOSignal))+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  # scale_color_gradient(low="red", high="blue")+
+  scale_shape_manual(values=SOSignal.shape, name = "Buy Signals")+
+  scale_y_continuous("Momentum Meter (Stoch. Osc)")+
+  scale_x_continuous("Trend Meter (%B)")+
+  geom_vline(xintercept = c(50,100), linetype="dotted")+
+  geom_hline(yintercept = c(0, 30, 70, 100), linetype="dotted")+
+  labs(title = "Trend and Momentum in IDX Sectors", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+stock.trend.momentum.best.plot.text <- paste("Grafik di atas menunjukkan posisi IDX Sectors berdasarkan kondisi Trend dan nilai dari indikator",
+              "Stochastic Oscillator tiap saham - saham yang berada pada IDX Sectors tersebut. Stoch. Osc > 80 berarti Overbought, < 20 berarti Oversold",
+sep = " ")
+stock.trend.momentum.best.plot.text <- ggparagraph(text = stock.trend.momentum.best.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(stock.trend.momentum.best.plot, stock.trend.momentum.best.plot.text, nrow = 2, heights = c(2,0.09))
+
+# library(plotly)
+# plot_ly(stock.trend.momentum.best, x = ~Avg.Trend, y = ~Avg.SO, text = ~Ticker, color = ~IDXSector)
+
+# ggplotly(stock.trend.momentum.best.plot)
+```
+
+
+
+# Graphic IDXSectors
+
+## IDXSector in Trend and Momentum
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Trend dan Stoch. Oscillator.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# Trend.Sector2.IDX <- quantech %>%
+#   group_by(IDXSector) %>%
+#   summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.Chg1D = mean(Ch1D))
+
+# Trend.Sector2.IDX <- quantech %>%
+#   group_by(IDXSector) %>%
+#   summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.Chg20D = mean(Ch20D))
+
+Trend.Sector2.IDX.plot <- ggplot(quantech %>%
+  group_by(IDXSector) %>%
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.Chg20D = mean(Ch20D)), 
+  aes(x=Avg.Trend, y=Avg.SO, label = IDXSector, color = Avg.Chg20D))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  scale_color_gradient(low="red", high="blue")+
+  scale_y_continuous("Momentum Meter (Stoch. Osc)")+
+  scale_x_continuous("Trend Meter (%B)")+
+  geom_vline(xintercept = c(50,100), linetype="dotted")+
+  geom_hline(yintercept = c(0, 30, 70, 100), linetype="dotted")+
+  labs(title = "Trend and Momentum in IDX Sectors", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+Trend.Sector2.IDX.plot.text <- paste("Grafik di atas menunjukkan posisi IDX Sectors berdasarkan kondisi Trend dan nilai dari indikator",
+              "Stochastic Oscillator tiap saham - saham yang berada pada IDX Sectors tersebut. Stoch. Osc > 80 berarti Overbought, < 20 berarti Oversold",
+sep = " ")
+Trend.Sector2.IDX.plot.text <- ggparagraph(text = Trend.Sector2.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Trend.Sector2.IDX.plot, Trend.Sector2.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+## IDXIndustry in Trend and Momentum
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Trend dan Stoch. Oscillator.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# Trend.Industry2.IDX <- quantech %>%
+#   group_by(IDXIndustry, IDXSector) %>% 
+#   summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.Chg20D = mean(Ch20D))
+
+# outperform.sectorplot <- 
+Trend.Industry2.IDX.plot <- ggplot(quantech %>%
+  group_by(IDXIndustry, IDXSector) %>% 
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.Chg20D = mean(Ch20D)), 
+  aes(x=Avg.Trend, y=Avg.SO, label = IDXIndustry, color = Avg.Chg20D))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_gradient(low="red", high="blue")+
+    # scale_color_brewer(palette="Paired")+
+  scale_y_continuous("Momentum Meter (Stoch. Osc)")+
+  scale_x_continuous("Trend Meter (%B)")+
+  geom_vline(xintercept = c(50,100), linetype="dotted")+
+  geom_hline(yintercept = c(0, 30, 70, 100), linetype="dotted")+
+  labs(title = "Trend and Momentum in IDX Industry", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+Trend.Industry2.IDX.plot.text <- paste("Grafik di atas menunjukkan posisi IDX Industry berdasarkan kondisi Trend dan nilai dari indikator",
+              "Stochastic Oscillator tiap saham - saham yang berada pada IDX Industry tersebut. Stoch. Osc > 80 berarti Overbought, < 20 berarti Oversold",
+sep = " ")
+Trend.Industry2.IDX.plot.text <- ggparagraph(text = Trend.Industry2.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Trend.Industry2.IDX.plot, Trend.Industry2.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+
+# ggplotly(Trend.Industry2.IDX.plot)
+```
+
+## IDXSector in Foreign Net Buy 5D Positive
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Net Buy Asing yang positif dalam 5 hari.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# NBSA.Sector.IDX <- quantech %>%
+#   filter(F1Wk > 0) %>% 
+#   group_by(IDXSector) %>% 
+#   summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.NBSA1D = mean(F1D), Avg.NBSA2D = mean(F2D), Avg.NBSA1W = mean(F1Wk), Avg.NBSA1M = mean(F1Mo))
+
+NBSA.Sector.IDX.plot <- ggplot(quantech %>%
+  filter(F1Wk > 0) %>% 
+  group_by(IDXSector) %>% 
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.NBSA1D = mean(F1D), Avg.NBSA2D = mean(F2D), Avg.NBSA1W = mean(F1Wk), Avg.NBSA1M = mean(F1Mo)), 
+  aes(x=Avg.NBSA2D, y=Avg.NBSA1D, label = IDXSector, color= Avg.NBSA1M))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_gradient(low="blue", high="red")+
+  # geom_point(aes(color = ifelse(Avg.NBSA1W > 0, "tomato", "black")))+
+  scale_y_continuous("Net Buy sell Asing 1D")+
+  scale_x_continuous("Net Buy sell Asing 2D")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Net Foreign Buy Within 5D Based on IDX Sectors", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+NBSA.Sector.IDX.plot.text <- paste("Grafik di atas menunjukkan posisi rata - rata Net Buy Sell Asing setiap IDX Sector",
+sep = " ")
+NBSA.Sector.IDX.plot.text <- ggparagraph(text = NBSA.Sector.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(NBSA.Sector.IDX.plot, NBSA.Sector.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+## IDXIndustry in Foreign Net Buy 5D Positive
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Net Buy Asing yang positif dalam 5 hari.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# NBSA.Industry.IDX <- quantech %>%
+#   filter(F1Wk > 0) %>% 
+#   group_by(IDXIndustry) %>% 
+#   summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.NBSA1D = mean(F1D), Avg.NBSA2D = mean(F2D), Avg.NBSA1W = mean(F1Wk), Avg.NBSA1M = mean(F1Mo))
+
+NBSA.Industry.IDX.plot <- ggplot(quantech %>%
+  filter(F1Wk > 0) %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(Avg.Trend = mean(BB), Avg.SO = mean(SO), Avg.NBSA1D = mean(F1D), Avg.NBSA2D = mean(F2D), Avg.NBSA1W = mean(F1Wk), Avg.NBSA1M = mean(F1Mo)), 
+  aes(x=log10(Avg.NBSA2D), y=log10(Avg.NBSA1D), label = IDXIndustry, color= Avg.NBSA1M))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_size(range = c(3, 5), name = "Avg. %Ch \nTurnover")+
+  # scale_color_manual(values=c("blue", "#009900", "orange", "red", "gray"))+
+  scale_color_gradient(low="blue", high="red")+
+  # geom_point(aes(color = ifelse(Avg.NBSA1W > 0, "tomato", "black")))+
+  scale_y_continuous("Net Buy sell Asing 1D (log scale)")+
+  scale_x_continuous("Net Buy sell Asing 2D (log scale)")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Net Foreign Buy Within 5D Based on IDX Industry", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%B)", y = "% Price Change")
+
+NBSA.Industry.IDX.plot.text <- paste("Grafik di atas menunjukkan posisi rata - rata Net Buy Sell Asing setiap IDX Industry",
+sep = " ")
+NBSA.Industry.IDX.plot.text <- ggparagraph(text = NBSA.Industry.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(NBSA.Industry.IDX.plot, NBSA.Industry.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+## IDXSector in 1D, 5D and 20D % Change
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Rata - Rata Pergerakannya dalam 1D, 5D dan 20D.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# Change.Sector.IDX <- quantech %>%
+#   group_by(IDXSector) %>% 
+#   summarize(Avg.Chg1D = mean(Ch1D), Avg.Chg5D = mean(Ch5D), Avg.Chg20D = mean(Ch20D))
+
+Change.Sector.IDX.plot <- ggplot(quantech %>%
+  group_by(IDXSector) %>% 
+  summarize(Avg.Chg1D = mean(Ch1D), Avg.Chg5D = mean(Ch5D), Avg.Chg20D = mean(Ch20D)), 
+  aes(x=Avg.Chg20D, y=Avg.Chg5D, label = IDXSector, color= Avg.Chg1D))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_color_gradient(low="red", high="blue")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Percentage IDX Sector Changes", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "%Ch in 20D", y = "%Ch in 5D")
+
+Change.Sector.IDX.plot.text <- paste("Grafik di atas menunjukkan persentase pergerakan IDX Sector dalam 1D, 5D dan 20D",
+              sep = " ")
+Change.Sector.IDX.plot.text <- ggparagraph(text = Change.Sector.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Change.Sector.IDX.plot, Change.Sector.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+## IDXIndustry in 1D, 5D and 20D % Change
+
+Grafik ini menampilkan Sektor dan Relasinya-nya dengan Rata - Rata Pergerakannya dalam 1D, 5D dan 20D.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# Change.Industry.IDX <- quantech %>%
+#   group_by(IDXIndustry) %>% 
+#   summarize(Avg.Chg1D = mean(Ch1D), Avg.Chg5D = mean(Ch5D), Avg.Chg20D = mean(Ch20D))
+
+Change.Industry.IDX.plot <- ggplot(quantech %>%
+  group_by(IDXIndustry) %>% 
+  summarize(Avg.Chg1D = mean(Ch1D), Avg.Chg5D = mean(Ch5D), Avg.Chg20D = mean(Ch20D)), 
+  aes(x=Avg.Chg20D, y=Avg.Chg5D, label = IDXIndustry, color= Avg.Chg1D))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.line = element_line(colour = "black"))+
+  scale_color_gradient(low="red", high="blue")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Percentage IDX Industry Changes", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "%Ch in 20D", y = "%Ch in 5D")
+
+Change.Industry.IDX.plot.text <- paste("Grafik di atas menunjukkan persentase pergerakan IDX Industry dalam 1D, 5D dan 20D",
+              sep = " ")
+Change.Industry.IDX.plot.text <- ggparagraph(text = Change.Industry.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Change.Industry.IDX.plot, Change.Industry.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+# Graphic IDX Stock Explorer Rotation
+
+## Stock Explorer Quadrant
+
+Grafik Stock Explorer Quadrant ini menampilkan Saham dan Trend-nya dengan sinyal.
+
+```{r, fig.width=10, fig.height=15, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation <- quantech %>% 
+#   mutate(RCBB = RC.BB - PrevRC.BB,
+#          kairiRC = round(((RC.JKSE - MA.RC)/MA.RC*100),2))
+
+Dandy.Rotationplot2 <- ggplot(quantech, aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$KairiMABB200), y = max(quantech$KairiMABB20), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$KairiMABB200), y = min(quantech$KairiMABB20), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$KairiMABB200), y = min(quantech$KairiMABB20), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$KairiMABB200), y = max(quantech$KairiMABB20), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+Dandy.Rotationplot2.text <- paste("Stock Explorer Quadrant terdiri dari 4 Quadrant : Outperform, Fast, Underperform dan BoW (Buy on Weakness).",
+              "Saham di Quadrant Outperform berarti sedang dan berpotensi tetap Outperform IHSG. Begitu juga sebaliknya dengan Quadrant Underperform.",
+              "Saham di Quadrant Fast berarti dalam jangka pendek Outperform IHSG namun berpotensi segera Underperform IHSG",
+              "Saham di Quadrant BoW berarti dalam jangka pendek Underperform IHSG namun berpotensi segera Outperform IHSG.",
+              "Pada Stock Explorer Quadrant, ditambahkan juga atribut seperti Trend dan Sinyal dari Stochastic Oscillator.",
+              sep = " ")
+
+Dandy.Rotationplot2.text <- ggparagraph(text = Dandy.Rotationplot2.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Dandy.Rotationplot2, Dandy.Rotationplot2.text, nrow = 2, heights = c(1,0.09))
+```
+
+## Stock Explorer Quadrant (O/P Trend Only)
+
+Grafik Stock Explorer Quadrant ini hanya menampilkan Saham (berserta Trend) yang berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OPonly <- dandy.rotation %>% 
+#   filter(kairiRC >= 0)
+
+# RCBB >= 0
+
+# library(ggthemes)
+
+ggplot(quantech %>% filter(KairiMABB200 > 0), 
+                              aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Relative Uptrend", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+
+# ggplotly(Dandy.Rotationplot6)
+```
+
+## Stock Explorer Quadrant (O/P Trend Only) with Uptrend
+
+Grafik Stock Explorer Quadrant ini hanya menampilkan Saham (berserta Trend) yang berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OPonlyUT <- dandy.rotation %>% 
+#   filter(kairiRC >= 0, Trend == "Uptrend")
+
+# RCBB >= 0
+
+ggplot(quantech %>% filter(KairiMABB200 > 0, Trend == "Uptrend"), 
+                              aes(x = KairiMABB20, y = KairiMABB200, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  # scale_color_manual(values=Trend.color)+
+  scale_color_brewer(palette="Paired")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Outperform Trend and Uptrend Stocks", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+```
+
+## Stock Explorer Quadrant (O/P Trend Only) with Buy Signal and Uptrend
+
+Grafik Stock Explorer Quadrant ini hanya menampilkan Saham (berserta Trend) yang berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OPonlyUTB <- dandy.rotation %>% 
+#   filter(kairiRC >= 0, Trend == "Uptrend", SOSignal %in% c("Alert Buy", "Buy Now"))
+
+# RCBB >= 0
+
+ggplot(quantech %>% filter(KairiMABB200 > 0, 
+                                                  Trend == "Uptrend", 
+                                                  SOSignal %in% c("Alert Buy", "Buy Now")), 
+                              aes(x = KairiMABB20, y = KairiMABB200, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  # scale_color_manual(values=Trend.color)+
+  scale_color_brewer(palette="Paired")+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Outperform Trend with Buy Signals and Uptrend Stocks", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+```
+
+## Stock Explorer Quadrant (O/P Quadrant Only)
+
+Grafik Stock Explorer Quadrant ini hanya menampilkan Saham (berserta Trend) yang berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OP <- dandy.rotation %>% 
+#   filter(kairiRC >= 0, RCBB >= 0 )
+
+ggplot(quantech %>% filter(KairiMABB20 > 0, KairiMA200 > 0), 
+                              aes(x = KairiMA200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Outperform Quadrant Only", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+```
+
+## Stock Explorer Quadrant (O/P Quadrant Only) with Uptrend
+
+Grafik Stock Explorer Quadrant ini hanya menampilkan Saham (berserta Trend) yang berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OPUPT <- dandy.rotation %>% 
+#   filter(kairiRC >= 0, RCBB >= 0, Trend == "Uptrend")
+
+ggplot(quantech %>% filter(KairiMABB20 > 0, KairiMA200 > 0, Trend == "Uptrend"), 
+                              aes(x = KairiMA200, y = KairiMABB20, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  # scale_color_manual(values=Relation.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  # annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  # annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  # annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  # annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Outperform Quadrant and Uptrend Only", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+```
+
+## Stock Explorer Quadrant (O/P Quadrant Only) with Buy Signal and Uptrend
+
+Grafik Stock Explorer Rotation ini hanya menampilkan Saham yang mendapat sinyal Buy (Alert Buy dan Buy Now), dalam kondisi Uptrend dan berada pada kuadran Outperform.
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.OPUP <- dandy.rotation %>% 
+#   filter(kairiRC >= 0, RCBB >= 0, Trend == "Uptrend", SOSignal %in% c("Alert Buy", "Buy Now"))
+
+ggplot(quantech %>% filter(KairiMABB200 > 0, 
+                                                  Trend == "Uptrend", 
+                                                  SOSignal %in% c("Alert Buy", "Buy Now")), 
+                              aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = IDXSector))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ Relation, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  # scale_color_manual(values=Relation.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant - Outperform Quadrant, Uptrend and AlertBuyNow Only", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+```
+
+## Stock Explorer Quadrant - Consumer Related
+
+Grafik Stock Explorer Quadrant ini menampilkan Saham dan Trend-nya dengan sinyal.
+
+```{r, fig.width=10, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.consumer <- dandy.rotation %>% 
+#   filter(IDXSector %in% c("Barang Konsumen Non-Primer", "Barang Konsumen Primer", "Kesehatan"))
+
+Dandy.Rotationplot2 <- ggplot(quantech %>% 
+                                filter(IDXSector %in% c("Barang Konsumen Non-Primer", "Barang Konsumen Primer", "Kesehatan")),
+                              aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant for Consumer Related Sector", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+Dandy.Rotationplot2.text <- paste("Stock Explorer Quadrant terdiri dari 4 Quadrant : Outperform, Fast, Underperform dan BoW (Buy on Weakness).",
+              "Saham di Quadrant Outperform berarti sedang dan berpotensi tetap Outperform IHSG. Begitu juga sebaliknya dengan Quadrant Underperform.",
+              "Saham di Quadrant Fast berarti dalam jangka pendek Outperform IHSG namun berpotensi segera Underperform IHSG",
+              "Saham di Quadrant BoW berarti dalam jangka pendek Underperform IHSG namun berpotensi segera Outperform IHSG.",
+              "Pada Stock Explorer Quadrant, ditambahkan juga atribut seperti Trend dan Sinyal dari Stochastic Oscillator.",
+              sep = " ")
+
+Dandy.Rotationplot2.text <- ggparagraph(text = Dandy.Rotationplot2.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Dandy.Rotationplot2, Dandy.Rotationplot2.text, nrow = 2, heights = c(1,0.09))
+```
+
+## Stock Explorer Quadrant - Comdty and Infra Related
+
+Grafik Stock Explorer Quadrant ini menampilkan Saham dan Trend-nya dengan sinyal.
+
+```{r, fig.width=10, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.infrastructure <- dandy.rotation %>% 
+#   filter(IDXSector %in% c("Energi", "Barang Baku", "Perindustrian", "Transportasi & Logistik"))
+
+Dandy.Rotationplot2 <- ggplot(quantech %>% 
+                                filter(IDXSector %in% c("Energi", "Barang Baku", "Perindustrian", "Transportasi & Logistik")),
+                              aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant for Comdty and Infra Related Sector", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+Dandy.Rotationplot2.text <- paste("Stock Explorer Quadrant terdiri dari 4 Quadrant : Outperform, Fast, Underperform dan BoW (Buy on Weakness).",
+              "Saham di Quadrant Outperform berarti sedang dan berpotensi tetap Outperform IHSG. Begitu juga sebaliknya dengan Quadrant Underperform.",
+              "Saham di Quadrant Fast berarti dalam jangka pendek Outperform IHSG namun berpotensi segera Underperform IHSG",
+              "Saham di Quadrant BoW berarti dalam jangka pendek Underperform IHSG namun berpotensi segera Outperform IHSG.",
+              "Pada Stock Explorer Quadrant, ditambahkan juga atribut seperti Trend dan Sinyal dari Stochastic Oscillator.",
+              sep = " ")
+
+Dandy.Rotationplot2.text <- ggparagraph(text = Dandy.Rotationplot2.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Dandy.Rotationplot2, Dandy.Rotationplot2.text, nrow = 2, heights = c(1,0.09))
+```
+
+## Stock Explorer Quadrant - Interest Related
+
+Grafik Stock Explorer Quadrant ini menampilkan Saham dan Trend-nya dengan sinyal.
+
+```{r, fig.width=10, fig.height=10, echo=FALSE, message=FALSE, warning=FALSE}
+# dandy.rotation.interest <- dandy.rotation %>% 
+#   filter(IDXSector %in% c("Keuangan", "Infrastruktur", "Properti & Real Estat"))
+
+Dandy.Rotationplot2 <- ggplot(quantech %>% 
+                                filter(IDXSector %in% c("Keuangan", "Infrastruktur", "Properti & Real Estat")),
+                              aes(x = KairiMABB200, y = KairiMABB20, label = Ticker, color = Trend))+
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  annotate("text", x = max(quantech$kairiRC), y = max(quantech$RCBB), label = "Outperform", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = min(quantech$RCBB), label = "Underperform", hjust = "bottom")+
+  annotate("text", x = max(quantech$kairiRC), y = min(quantech$RCBB), label = "BoW", hjust = "top")+
+  annotate("text", x = min(quantech$kairiRC), y = max(quantech$RCBB), label = "Fast", hjust = "bottom")+
+  labs(title = "Stock Explorer Quadrant for Interest Rate Related Sector", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+
+Dandy.Rotationplot2.text <- paste("Stock Explorer Quadrant terdiri dari 4 Quadrant : Outperform, Fast, Underperform dan BoW (Buy on Weakness).",
+              "Saham di Quadrant Outperform berarti sedang dan berpotensi tetap Outperform IHSG. Begitu juga sebaliknya dengan Quadrant Underperform.",
+              "Saham di Quadrant Fast berarti dalam jangka pendek Outperform IHSG namun berpotensi segera Underperform IHSG",
+              "Saham di Quadrant BoW berarti dalam jangka pendek Underperform IHSG namun berpotensi segera Outperform IHSG.",
+              "Pada Stock Explorer Quadrant, ditambahkan juga atribut seperti Trend dan Sinyal dari Stochastic Oscillator.",
+              sep = " ")
+
+Dandy.Rotationplot2.text <- ggparagraph(text = Dandy.Rotationplot2.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Dandy.Rotationplot2, Dandy.Rotationplot2.text, nrow = 2, heights = c(1,0.09))
+```
+
+# Trading Modules
+
+## Low Correlation
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(Corr20D < 0) %>% 
+  ggplot(aes(x = Ch20D, y = Ch5D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks that does not follow JCI", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+## High Correlation
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(Corr20D > 0) %>% 
+  ggplot(aes(x = Ch20D, y = Ch5D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks that move according to JCI ", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+## Squeezing to Blow
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(Bandwidth < 10, BandwidthDirection > 0) %>% 
+  ggplot(aes(x = Ch20D, y = Ch5D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks that about to move very Volatile", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+## Buy on Weakness in Uptrend
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(Bandwidth < 10, BandwidthDirection > 0) %>% 
+  ggplot(aes(x = Ch20D, y = Ch5D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks with a chance for Buy on Weakness", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+## New Uptrend
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(Bandwidth < 10, BandwidthDirection > 0) %>% 
+  ggplot(aes(x = Ch20D, y = Ch5D, label = Ticker, color = Trend)) +
+  geom_text_repel(aes(size = ChTurnover))+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "%Ch in Turnover")+
+  scale_y_continuous("Momentum Performance")+
+  scale_x_continuous("Trend Performance")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = 0, linetype="dotted")+
+  geom_hline(yintercept = 0, linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks that are newly move in Uptrend", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+## No Weekly and Monthly Overbought
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+quantech %>% filter(WkESOValue <= 70, MoESOValue <= 70) %>% 
+  ggplot(aes(x = MoESOValue, y = WkESOValue, label = Ticker, color = Trend)) +
+  geom_text_repel()+
+  geom_point(aes(shape = SOSignal))+
+  theme_bw() + 
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))+
+  # facet_wrap(~ IDXSector, ncol = 2, scales = "free")+
+  scale_shape_manual(values=SOSignal.shape,name = "Signal from \nStochastic Osc.")+
+  scale_size(range = c(2, 6), name = "Value of Stoch. Osc")+
+  scale_y_continuous("Value of Weekly Stoch. Oscillator")+
+  scale_x_continuous("Value of Monthly Stoch. Oscillator")+
+  scale_color_manual(values=Trend.color)+
+  geom_vline(xintercept = c(0, 20), linetype="dotted")+
+  geom_hline(yintercept = c(0, 20), linetype="dotted")+
+  labs(title = "Stock Explorer Quadrant for Stocks that has not Monthly nor Weekly Overbought", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Trend (%BB)", y = "% Price Change")
+```
+
+# Cluster
+
+## 1D, 5D, 20D & YTD Return
+
+Table dan Grafik ini menggolongkan saham pada return 1, 5, 20 hari dan YTD (dari sejak awal tahun 2020).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+multi.return <- quantech %>% 
+  select(Ticker, Ch1D, Ch5D, Ch20D, YTDRet) %>% na.omit()
+
+colnames(multi.return) <- c("Ticker", "D1Ch", "D5Ch", "D20Ch", "YTDCh")
+
+multi.return <- as.data.frame(multi.return)
+multi.return$D1Ch <- as.numeric(multi.return$D1Ch)
+multi.return$D5Ch <- as.numeric(multi.return$D5Ch)
+multi.return$D20Ch <- as.numeric(multi.return$D20Ch)
+multi.return$YTDCh <- as.numeric(multi.return$YTDCh)
+
+multi.return %>% 
+  arrange(Ticker)
+
+rownames(multi.return) <- multi.return$Ticker
+multi.return.norow <- multi.return[,-1]
+
+multi.return.norow.km <- kmeans(multi.return.norow, 4)
+multi.return$cluster <- multi.return.norow.km$cluster
+multi.return$cluster <- as.factor(multi.return$cluster)
+```
+
+### Graph YTD - 5D
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+ggplot(multi.return, aes(YTDCh, D5Ch, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Stock Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "%Ch in YTD", y = "%Ch in 5D")
+```
+
+### Graph 20D - 5D
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+ggplot(multi.return, aes(D20Ch, D5Ch, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Stock Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "%Ch in 20D", y = "%Ch in 5D")
+```
+
+### Graph 1D - 5D
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+ggplot(multi.return, aes(D1Ch, D5Ch, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Stock Return", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "%Ch in 1D", y = "%Ch in 5D")
+```
+
+### Table
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+datatable(multi.return,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Multiple Return - Cluster :', htmltools::em(selected.date)))
+```
+
+## Daily, Weekly and Monthly Stoch. Osc
+
+Table dan Grafik ini menggolongkan saham berdasarkan Daily dan Weekly Stochastic Oscillator.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cluster.stoch <- quantech %>% 
+  select(Ticker, SO, WkESOValue, MoESOValue)
+
+cluster.stoch <- as.data.frame(cluster.stoch)
+cluster.stoch$SO <- as.numeric(cluster.stoch$SO)
+cluster.stoch$WkESOValue <- as.numeric(cluster.stoch$WkESOValue)
+cluster.stoch$MoESOValue <- as.numeric(cluster.stoch$MoESOValue)
+
+rownames(cluster.stoch) <- cluster.stoch$Ticker
+cluster.stoch.norow <- cluster.stoch[,-1]
+
+cluster.stoch.norow.km <- kmeans(cluster.stoch.norow, 4)
+cluster.stoch$Cluster <- cluster.stoch.norow.km$cluster
+cluster.stoch$Cluster <- as.factor(cluster.stoch$Cluster)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE,  message=FALSE, warning=FALSE}
+cluster.stoch.plot <- ggplot(cluster.stoch, aes(x = MoESOValue, y = WkESOValue, label = Ticker, color= Cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Daily dan Weekly Stoch. Osc", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "Monthly Stoch. Osc", y = "Weekly Stoch. Osc.")
+
+cluster.stoch.plot.text <- paste("Grafik di atas menunjukkan kluster saham berdasarkan level Daily dan Weekly Stochastic Oscillator",
+              sep = " ")
+cluster.stoch.plot.text <- ggparagraph(text = cluster.stoch.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(cluster.stoch.plot, cluster.stoch.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+datatable(cluster.stoch,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'Daily and Weekly Stoch. Osc - Cluster :', htmltools::em(selected.date)))
+```
+
+## 20D & 60D Correlation
+
+Table dan Grafik ini menggolongkan saham berdasarkan Korelasi terhadap IHSG dalam 20 dan 60 hari terakhir.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# correlation <- quantech %>%
+#   select(Ticker, Corr5D, Corr20D, Corr60D)
+
+correlation <- quantech %>%
+  select(Ticker, Corr20D, Corr60D)
+
+correlation <- as.data.frame(correlation)
+correlation$Corr20D <- as.numeric(correlation$Corr20D)
+correlation$Corr60D <- as.numeric(correlation$Corr60D)
+# correlation$Corr5D <- as.numeric(correlation$Corr5D)
+
+rownames(correlation) <- correlation$Ticker
+correlation.norow <- correlation[,-1]
+
+correlation.norow.km <- kmeans(correlation.norow, 4)
+correlation$cluster <- correlation.norow.km$cluster
+correlation$cluster <- as.factor(correlation$cluster)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+correlation.plot <- ggplot(correlation, aes(Corr60D, Corr20D, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of 20D and 60D Correlation", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "60 Day Correlation", y = "20 Day Correlation")
+
+correlation.plot.text <- paste("Grafik di atas menunjukkan kluster saham berdasarkan Korelasi 20 dan 60 Hari terhadap IHSG",
+              sep = " ")
+cluster.stoch.plot.text <- ggparagraph(text = correlation.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(correlation.plot, cluster.stoch.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+datatable(correlation,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    '20D and 60D Corelation - Cluster :', htmltools::em(selected.date)))
+```
+
+## IDXSector Return Cluster
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Sector.Return.IDX <- quantech %>% 
+  group_by(IDXSector) %>% 
+  summarize(avg1d = mean(Ch1D), avg5d = mean(Ch5D), avg20d = mean(Ch20D), avgYTD = mean(YTDRet)) %>% na.omit()
+  # arrange(desc(Sector)) %>%
+  # mutate(Sector = factor(Sector, levels = Sector))
+
+Sector.Return.IDX <- as.data.frame(Sector.Return.IDX)
+Sector.Return.IDX$avg1d <- as.numeric(Sector.Return.IDX$avg1d)
+Sector.Return.IDX$avg5d <- as.numeric(Sector.Return.IDX$avg5d)
+Sector.Return.IDX$avg20d <- as.numeric(Sector.Return.IDX$avg20d)
+Sector.Return.IDX$avgYTD <- as.numeric(Sector.Return.IDX$avgYTD)
+
+rownames(Sector.Return.IDX) <- Sector.Return.IDX$Sector
+Sector.Return.IDX.norow <- Sector.Return.IDX[,-1]
+
+Sector.Return.IDX.norow.km <- kmeans(Sector.Return.IDX.norow, 4)
+Sector.Return.IDX$cluster <- Sector.Return.IDX.norow.km$cluster
+Sector.Return.IDX$cluster <- as.factor(Sector.Return.IDX$cluster)
+
+# Sector.Return$avg1d <- format(round(Sector.Return$avg1d, 2), nsmall = 2)
+# Sector.Return$avg5d <- format(round(Sector.Return$avg5d, 2), nsmall = 2)
+# Sector.Return$avg20d <- format(round(Sector.Return$avg20d, 2), nsmall = 2)
+# Sector.Return$avgYTD <- format(round(Sector.Return$avgYTD, 2), nsmall = 2)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+Sector.Return.IDX.plot <- ggplot(Sector.Return.IDX, aes(avg1d, avg5d, label = IDXSector, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Sector Return in 1D, 5D, 20D and YTD", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "1 Day Return", y = "5 Day Return")
+
+Sector.Return.IDX.plot.text <- paste("Grafik di atas menunjukkan kluster IDXSector dengan Return 1, 5, 20 Hari serta Year To Date",
+              sep = " ")
+Sector.Return.IDX.plot.text <- ggparagraph(text = Sector.Return.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Sector.Return.IDX.plot, Sector.Return.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, fig.height=8, message=FALSE, warning=FALSE}
+datatable(Sector.Return.IDX,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'IDXSector Return 1D, 5D, 20% and YTD - Cluster :', htmltools::em(selected.date)))
+```
+
+## IDXIndustry Return Cluster
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Industry.Return.IDX <- quantech %>% 
+  group_by(IDXIndustry) %>% 
+  summarize(avg1d = mean(Ch1D), avg5d = mean(Ch5D), avg20d = mean(Ch20D), avgYTD = mean(YTDRet)) %>% na.omit()
+  # arrange(desc(Sector)) %>%
+  # mutate(Sector = factor(Sector, levels = Sector))
+
+Industry.Return.IDX <- as.data.frame(Industry.Return.IDX)
+Industry.Return.IDX$avg1d <- as.numeric(Industry.Return.IDX$avg1d)
+Industry.Return.IDX$avg5d <- as.numeric(Industry.Return.IDX$avg5d)
+Industry.Return.IDX$avg20d <- as.numeric(Industry.Return.IDX$avg20d)
+Industry.Return.IDX$avgYTD <- as.numeric(Industry.Return.IDX$avgYTD)
+
+rownames(Industry.Return.IDX) <- Industry.Return.IDX$Sector
+Industry.Return.IDX.norow <- Industry.Return.IDX[,-1]
+
+Industry.Return.IDX.norow.km <- kmeans(Industry.Return.IDX.norow, 4)
+Industry.Return.IDX$cluster <- Industry.Return.IDX.norow.km$cluster
+Industry.Return.IDX$cluster <- as.factor(Industry.Return.IDX$cluster)
+
+# Sector.Return$avg1d <- format(round(Sector.Return$avg1d, 2), nsmall = 2)
+# Sector.Return$avg5d <- format(round(Sector.Return$avg5d, 2), nsmall = 2)
+# Sector.Return$avg20d <- format(round(Sector.Return$avg20d, 2), nsmall = 2)
+# Sector.Return$avgYTD <- format(round(Sector.Return$avgYTD, 2), nsmall = 2)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+Industry.Return.IDX.plot <- ggplot(Industry.Return.IDX, aes(avg1d, avg5d, label = IDXIndustry, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Sector Return in 1D, 5D, 20D and YTD", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "1 Day Return", y = "5 Day Return")
+
+Industry.Return.IDX.plot.text <- paste("Grafik di atas menunjukkan kluster IDXIndustry dengan Return 1, 5, 20 Hari serta Year To Date",
+              sep = " ")
+Industry.Return.IDX.plot.text <- ggparagraph(text = Industry.Return.IDX.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Industry.Return.IDX.plot, Industry.Return.IDX.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, fig.height=10, message=FALSE, warning=FALSE}
+datatable(Industry.Return.IDX,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'IDXIndustry Return 1D, 5D, 20% and YTD - Cluster :', htmltools::em(selected.date)))
+```
+
+## Foreign Flow
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Foreign.Flow <- quantech %>% 
+  select(Ticker, F1D, F2D, F1Wk, F1Mo)
+  # arrange(desc(Sector)) %>%
+  # mutate(Sector = factor(Sector, levels = Sector))
+
+Foreign.Flow <- as.data.frame(Foreign.Flow)
+Foreign.Flow$F1D <- as.numeric(Foreign.Flow$F1D)
+Foreign.Flow$F2D <- as.numeric(Foreign.Flow$F2D)
+Foreign.Flow$F1Wk <- as.numeric(Foreign.Flow$F1Wk)
+Foreign.Flow$F1Mo <- as.numeric(Foreign.Flow$F1Mo)
+
+rownames(Foreign.Flow) <- Foreign.Flow$Ticker
+Foreign.Flow.norow <- Foreign.Flow[,-1]
+
+Foreign.Flow.norow.km <- kmeans(Foreign.Flow.norow, 4)
+Foreign.Flow$cluster <- Foreign.Flow.norow.km$cluster
+Foreign.Flow$cluster <- as.factor(Foreign.Flow$cluster)
+
+# Sector.Return$avg1d <- format(round(Sector.Return$avg1d, 2), nsmall = 2)
+# Sector.Return$avg5d <- format(round(Sector.Return$avg5d, 2), nsmall = 2)
+# Sector.Return$avg20d <- format(round(Sector.Return$avg20d, 2), nsmall = 2)
+# Sector.Return$avgYTD <- format(round(Sector.Return$avgYTD, 2), nsmall = 2)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+Foreign.Flow.plot <- ggplot(Foreign.Flow, aes(F1D, F1Wk, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Sector Return in 1D, 5D, 20D and YTD", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "1 Day Return", y = "5 Day Return")
+
+Foreign.Flow.plot.text <- paste("Grafik di atas menunjukkan kluster IDXIndustry dengan Return 1, 5, 20 Hari serta Year To Date",
+              sep = " ")
+Foreign.Flow.plot.text <- ggparagraph(text = Foreign.Flow.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Foreign.Flow.plot, Foreign.Flow.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, fig.height=10, message=FALSE, warning=FALSE}
+datatable(Foreign.Flow,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'IDXIndustry Return 1D, 5D, 20% and YTD - Cluster :', htmltools::em(selected.date)))
+```
+
+## KairiMABB
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+KairiMABB <- quantech %>% 
+  select(Ticker, KairiMABB20, KairiMABB60, KairiMABB200)
+  # arrange(desc(Sector)) %>%
+  # mutate(Sector = factor(Sector, levels = Sector))
+
+KairiMABB <- as.data.frame(KairiMABB)
+KairiMABB$KairiMABB20 <- as.numeric(KairiMABB$KairiMABB20)
+KairiMABB$KairiMABB60 <- as.numeric(KairiMABB$KairiMABB60)
+KairiMABB$KairiMABB200 <- as.numeric(KairiMABB$KairiMABB200)
+
+rownames(KairiMABB) <- KairiMABB$Ticker
+KairiMABB.norow <- KairiMABB[,-1]
+
+KairiMABB.norow.km <- kmeans(KairiMABB.norow, 4)
+KairiMABB$cluster <- KairiMABB.norow.km$cluster
+KairiMABB$cluster <- as.factor(KairiMABB$cluster)
+
+# Sector.Return$avg1d <- format(round(Sector.Return$avg1d, 2), nsmall = 2)
+# Sector.Return$avg5d <- format(round(Sector.Return$avg5d, 2), nsmall = 2)
+# Sector.Return$avg20d <- format(round(Sector.Return$avg20d, 2), nsmall = 2)
+# Sector.Return$avgYTD <- format(round(Sector.Return$avgYTD, 2), nsmall = 2)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+KairiMABB.plot <- ggplot(KairiMABB, aes(KairiMABB20, KairiMABB200, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Sector Return in 1D, 5D, 20D and YTD", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "1 Day Return", y = "5 Day Return")
+
+KairiMABB.plot.text <- paste("Grafik di atas menunjukkan kluster IDXIndustry dengan Return 1, 5, 20 Hari serta Year To Date",
+              sep = " ")
+KairiMABB.plot.text <- ggparagraph(text = KairiMABB.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(KairiMABB.plot, KairiMABB.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, fig.height=10, message=FALSE, warning=FALSE}
+datatable(KairiMABB,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'IDXIndustry Return 1D, 5D, 20% and YTD - Cluster :', htmltools::em(selected.date)))
+```
+
+## Kairi MA5, MA20, MA60 and MA200
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Kairi.MA <- quantech %>% 
+  select(Ticker, KairiMA20, KairiMA60, KairiMA200)
+  # arrange(desc(Sector)) %>%
+  # mutate(Sector = factor(Sector, levels = Sector))
+
+Kairi.MA <- as.data.frame(Kairi.MA)
+Kairi.MA$KairiMA20 <- as.numeric(Kairi.MA$KairiMA20)
+Kairi.MA$KairiMA60 <- as.numeric(Kairi.MA$KairiMA60)
+Kairi.MA$KairiMA200 <- as.numeric(Kairi.MA$KairiMA200)
+
+rownames(Kairi.MA) <- Kairi.MA$Ticker
+Kairi.MA.norow <- Kairi.MA[,-1]
+
+Kairi.MA.norow.km <- kmeans(Kairi.MA.norow, 4)
+Kairi.MA$cluster <- Kairi.MA.norow.km$cluster
+Kairi.MA$cluster <- as.factor(Kairi.MA$cluster)
+
+# Sector.Return$avg1d <- format(round(Sector.Return$avg1d, 2), nsmall = 2)
+# Sector.Return$avg5d <- format(round(Sector.Return$avg5d, 2), nsmall = 2)
+# Sector.Return$avg20d <- format(round(Sector.Return$avg20d, 2), nsmall = 2)
+# Sector.Return$avgYTD <- format(round(Sector.Return$avgYTD, 2), nsmall = 2)
+```
+
+### Graph
+
+```{r, fig.width=10, fig.height=8, echo=FALSE, message=FALSE, warning=FALSE}
+Kairi.MA.plot <- ggplot(Kairi.MA, aes(KairiMA200, KairiMA20, label = Ticker, color= cluster))+
+  geom_point(size = 2)+
+  geom_text_repel(vjust = 0)+
+  theme_bw()+
+  labs(title = "Cluster of Sector Return in 1D, 5D, 20D and YTD", subtitle = Date.Signs, caption = "Quantechnical by MMD Chart", x = "1 Day Return", y = "5 Day Return")
+
+Kairi.MA.plot.text <- paste("Grafik di atas menunjukkan kluster IDXIndustry dengan Return 1, 5, 20 Hari serta Year To Date",
+              sep = " ")
+Kairi.MA.plot.text <- ggparagraph(text = Kairi.MA.plot.text, face = "italic", size = 8, color = "grey")
+
+ggarrange(Kairi.MA.plot, Kairi.MA.plot.text, nrow = 2, heights = c(2,0.09))
+```
+
+### Table
+
+```{r, echo=FALSE, fig.height=10, message=FALSE, warning=FALSE}
+datatable(Kairi.MA,
+          class = 'cell-border hover',
+          filter = 'top', rownames = FALSE, options = list(
+            pageLength = 10, autoWidth = TRUE),
+          caption = htmltools::tags$caption(
+    style = 'caption-side: top; text-align: middle;',
+    'IDXIndustry Return 1D, 5D, 20% and YTD - Cluster :', htmltools::em(selected.date)))
+```
+
+# Custom Index
+
+## Creating Index
+
+```{r}
+range(quantech_full$DateTime)
+
+bank_index <- quantech_full %>% 
+  select(DateTime, Ticker, Close) %>%
+  filter(Ticker %in% c("BMRI", "BBNI", "BBCA", "BBRI")) %>% 
+  group_by(DateTime) %>%
+  summarise(bank_index = sum(Close)/n())
+
+# prajogo_index <- quantech_full %>% 
+#   select(DateTime, Ticker, Close) %>%
+#   filter(Ticker %in% c("BREN", "TPIA", "BRPT")) %>% 
+#   group_by(DateTime) %>%
+#   summarise(prajogo_index = sum(Close)/n())
+
+fmcg_index <- quantech_full %>% 
+  select(DateTime, Ticker, Close) %>%
+  filter(Ticker %in% c("INDF", "ICBP", "MYOR", "SIDO")) %>% 
+  group_by(DateTime) %>%
+  summarise(fmcg_index = sum(Close)/n())
+
+telecom_index <- quantech_full %>% 
+  select(DateTime, Ticker, Close) %>%
+  filter(Ticker %in% c("EXCL", "TLKM", "ISAT")) %>% 
+  group_by(DateTime) %>%
+  summarise(telecom_index = sum(Close)/n())
+
+property_index <- quantech_full %>% 
+  select(DateTime, Ticker, Close) %>%
+  filter(Ticker %in% c("BSDE", "CTRA", "PWON")) %>% 
+  group_by(DateTime) %>%
+  summarise(property_index = sum(Close)/n())
+
+```
+
+### Chart
+
+```{r}
+fmcg_index %>% 
+  ggplot(aes(x = DateTime, y = fmcg_index))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 20) +
+  # geom_bbands(ma_fun = SMA, sd = 2, n = 20)+
+    labs(title = "FANG Candlestick Chart", 
+         subtitle = "Experimenting with Multiple Stocks",
+         y = "Closing Price", x = "") + 
+    theme_tq()
+```
+
+### Multiple Charts
+
+```{r}
+quantech_full %>% 
+  filter(IDXSector == "Barang Baku", Trend %in% c("New Uptrend", "Uptrend")) %>% 
+  ggplot(aes(x = DateTime, y = Close))+
+  geom_line()+
+  geom_ma(ma_fun = SMA, n = 20) +
+  # geom_bbands(ma_fun = SMA, sd = 2, n = 20)+
+    labs(title = "FANG Candlestick Chart", 
+         subtitle = "Experimenting with Multiple Stocks",
+         y = "Closing Price", x = "") + 
+  facet_wrap(~ Ticker, ncol = 2, scales = "free_y")+
+    theme_tq()
+```
+
+
+### Return Chart
+
+```{r}
+left_join(bank_index, telecom_index) %>%
+  left_join(., fmcg_index) %>%
+  pivot_longer(cols = !DateTime) %>% 
+  group_by(name) %>%
+  filter(DateTime > "2023-12-31") %>% 
+  tq_mutate(select = value, mutate_fun = periodReturn, period = "daily", type = "arithmetic") %>%
+  mutate(wealth.index = 100 * cumprod(1 + daily.returns)) %>%
+  ggplot(aes(x = DateTime, y = wealth.index, color = name)) +
+  geom_line(linewidth = 1) +
+  labs(title = "MA and V: Stock Prices") +
+  theme_tq() + 
+  scale_color_tq()
+```
+
+### Monthly Graph Return
+
+```{r}
+quantech_full %>% 
+  filter(Ticker %in% c("BMRI", "BBCA", "BBRI", "BBNI"), DateTime > "2023-12-31") %>% 
+  # filter_by_time(.date_var = DateTime, .start_date = "2024") %>% 
+  group_by(Ticker) %>% 
+  tq_transmute(select = Close, mutate_fun = periodReturn, period = "monthly", type = "arithmetic") %>%
+    ggplot(aes(x = DateTime, y = monthly.returns, fill = Ticker)) +
+    geom_col() +
+    geom_hline(yintercept = 0, color = palette_light()[[1]]) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = "Monthly Returns",
+         # subtitle = "Get annual returns quickly with tq_transmute!",
+         y = "Annual Returns", x = "") +
+    facet_wrap(~ Ticker, ncol = 2, scales = "free_y") +
+    theme_tq() + 
+    scale_fill_tq()
+```
+
+# Performance
+
+```{r}
+periodReturn(bank_index %>% as.data.frame(), period = "monthly", subset = "2024")
+
+charts.PerformanceSummary(R = periodReturn(bank_index %>% as.data.frame(), period = "monthly", subset = "2024"))
+```
+
+
